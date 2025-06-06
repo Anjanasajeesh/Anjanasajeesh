@@ -122,15 +122,35 @@ class Product {
   Map<String, dynamic> toFirestore() {
     return {'name': name, 'price': price, 'unit': unit, 'imageUrl': imageUrl};
   }
+
+  // Override equality and hashCode for Product to compare by ID
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is Product && runtimeType == other.runtimeType && id == other.id;
+
+  @override
+  int get hashCode => id.hashCode;
 }
 
+/// Represents an item in the shopping cart.
+/// This class is designed to be immutable.
 class CartItem {
   final Product product;
-  int quantity;
+  final double quantity; // Declared final for immutability
 
-  CartItem({required this.product, this.quantity = 1});
+  CartItem({required this.product, this.quantity = 1.0});
 
   double get totalPrice => product.price * quantity;
+
+  /// Creates a new [CartItem] instance with updated properties.
+  /// This is the immutable way to "modify" a CartItem.
+  CartItem copyWith({Product? product, double? quantity}) {
+    return CartItem(
+      product: product ?? this.product,
+      quantity: quantity ?? this.quantity,
+    );
+  }
 
   // Method to convert CartItem to a Map for Firestore (as part of an Order)
   Map<String, dynamic> toMap() {
@@ -156,9 +176,21 @@ class CartItem {
             map['productImageUrl'] ??
             'https://placehold.co/100x100/grey/white?text=Product',
       ),
-      quantity: map['quantity'] ?? 1,
+      // Ensure quantity is parsed as double
+      quantity: (map['quantity'] as num?)?.toDouble() ?? 1.0,
     );
   }
+
+  // Override equality and hashCode for CartItem to compare by product ID
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is CartItem &&
+          runtimeType == other.runtimeType &&
+          product == other.product; // Compare based on product equality
+
+  @override
+  int get hashCode => product.hashCode; // Hash based on product's hash
 }
 
 class Order {
@@ -604,7 +636,7 @@ void main() async {
           currentUser = User(
             id: fbUser.uid,
             username: fbUser.email ?? 'anonymous_user',
-            role: UserRole.user, // Default to user role
+            role: UserRole.user, // Default to user role for new profiles
             email: fbUser.email ?? '',
           );
           await db!
@@ -715,8 +747,7 @@ class _LoginPageState extends State<LoginPage> {
   final AuthService _authService = AuthService();
   String? _errorMessage;
   bool _isLoading = false; // New state for loading indicator
-  UserRole _selectedRole =
-      UserRole.user; // New state variable for role selection
+  // Removed _selectedRole as it's no longer needed
 
   void _login() async {
     print('Login button pressed!'); // Added for debugging
@@ -815,9 +846,9 @@ class _LoginPageState extends State<LoginPage> {
       final User? newUser = await _authService.register(
         email,
         password,
-        email,
-        '',
-        _selectedRole,
+        email, // Use email as default name for new registration
+        '', // Phone can be empty initially
+        UserRole.user, // All new registrations are regular users
       );
 
       if (mounted) {
@@ -934,37 +965,7 @@ class _LoginPageState extends State<LoginPage> {
                     child: Text('Login', style: TextStyle(fontSize: 18)),
                   ),
               SizedBox(height: 20),
-              Text(
-                'Register as:',
-                style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-              ),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Radio<UserRole>(
-                    value: UserRole.user,
-                    groupValue: _selectedRole,
-                    onChanged: (UserRole? value) {
-                      setState(() {
-                        _selectedRole = value!;
-                      });
-                    },
-                  ),
-                  Text('User'),
-                  SizedBox(width: 20),
-                  Radio<UserRole>(
-                    value: UserRole.admin,
-                    groupValue: _selectedRole,
-                    onChanged: (UserRole? value) {
-                      setState(() {
-                        _selectedRole = value!;
-                      });
-                    },
-                  ),
-                  Text('Admin'),
-                ],
-              ),
-              SizedBox(height: 10),
+              // Removed the "Register as: User / Admin" radio buttons
               TextButton(
                 onPressed: _register,
                 child: Text('Register New Account'),
@@ -992,82 +993,119 @@ class _UserAppState extends State<UserApp> {
       []; // Favorites still in-memory for simplicity
 
   // Pages for the User App
-  late List<Widget> _userPages;
+  // MODIFICATION START: Convert _userPages to a getter
+  List<Widget> get _userPages => <Widget>[
+    // UserHomePage will now listen to product changes from Firestore
+    StreamBuilder<List<Product>>(
+      stream: _productService.getProducts(),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return Center(child: CircularProgressIndicator());
+        }
+        if (snapshot.hasError) {
+          return Center(
+            child: Text('Error loading products: ${snapshot.error}'),
+          );
+        }
+        final products = snapshot.data ?? [];
+        return UserHomePage(
+          products: products,
+          onAddToCart: _addToCart,
+          onToggleFavorite: _toggleFavorite,
+          favoriteProducts: _favoriteProducts,
+        );
+      },
+    ),
+    CartPage(
+      cartItems: _cartItems, // This will now always pass the latest _cartItems
+      onQuantityChanged: _updateCartItemQuantity,
+      onRemoveFromCart: _removeFromCart,
+      onCheckout: _checkout,
+    ),
+    FavoriteProductsPage(
+      favoriteProducts: _favoriteProducts,
+      onAddToCart: _addToCart,
+      onRemoveFromFavorites: _toggleFavorite,
+    ),
+    OrderHistoryPage(
+      userId: currentUser!.id,
+    ), // OrderHistoryPage will use StreamBuilder internally
+    ProfilePage(
+      user: currentUser!,
+      onLogout: _logout,
+      onUpdateUser: _updateCurrentUserDetails,
+    ),
+  ];
+  // MODIFICATION END
 
   @override
   void initState() {
     super.initState();
-    _userPages = <Widget>[
-      // UserHomePage will now listen to product changes from Firestore
-      StreamBuilder<List<Product>>(
-        stream: _productService.getProducts(),
-        builder: (context, snapshot) {
-          if (snapshot.connectionState == ConnectionState.waiting) {
-            return Center(child: CircularProgressIndicator());
-          }
-          if (snapshot.hasError) {
-            return Center(
-              child: Text('Error loading products: ${snapshot.error}'),
-            );
-          }
-          final products = snapshot.data ?? [];
-          return UserHomePage(
-            products: products,
-            onAddToCart: _addToCart,
-            onToggleFavorite: _toggleFavorite,
-            favoriteProducts: _favoriteProducts,
-          );
-        },
-      ),
-      CartPage(
-        cartItems: _cartItems,
-        onQuantityChanged: _updateCartItemQuantity,
-        onRemoveFromCart: _removeFromCart,
-        onCheckout: _checkout,
-      ),
-      FavoriteProductsPage(
-        favoriteProducts: _favoriteProducts,
-        onAddToCart: _addToCart,
-        onRemoveFromFavorites: _toggleFavorite,
-      ),
-      OrderHistoryPage(
-        userId: currentUser!.id,
-      ), // OrderHistoryPage will use StreamBuilder internally
-      ProfilePage(
-        user: currentUser!,
-        onLogout: _logout,
-        onUpdateUser: _updateCurrentUserDetails,
-      ),
-    ];
+    // No need to initialize _userPages here anymore, as it's a getter
   }
 
+  /// Adds a product to the cart.
+  /// This method ensures immutability by creating a new list and new CartItem objects.
   void _addToCart(Product product) {
     setState(() {
-      int index = _cartItems.indexWhere(
+      // Create a mutable copy of the current cart items list.
+      final List<CartItem> updatedCart = List.from(_cartItems);
+      int index = updatedCart.indexWhere(
         (item) => item.product.id == product.id,
       );
       if (index != -1) {
-        _cartItems[index].quantity++;
+        // If the product is already in the cart, create a new CartItem with updated quantity
+        // and replace the old one in the new list.
+        updatedCart[index] = updatedCart[index].copyWith(
+          quantity: updatedCart[index].quantity + 1.0,
+        );
       } else {
-        _cartItems.add(CartItem(product: product));
+        // If the product is new, create a new CartItem and add it to the new list.
+        updatedCart.add(CartItem(product: product, quantity: 1.0));
       }
+      // Assign the newly created list back to _cartItems to trigger a UI rebuild.
+      _cartItems = updatedCart;
+      print(
+        'Cart after add: ${_cartItems.map((e) => '${e.product.name}:${e.quantity}').join(', ')}',
+      ); // Debug print
       _showMessageBox(context, 'Success', '${product.name} added to cart!');
     });
   }
 
-  void _updateCartItemQuantity(CartItem item, int newQuantity) {
+  /// Updates the quantity of a specific item in the cart.
+  /// This method ensures immutability by creating a new list and new CartItem objects.
+  void _updateCartItemQuantity(CartItem item, double newQuantity) {
     setState(() {
-      if (newQuantity > 0) {
-        item.quantity = newQuantity;
-      } else {
-        _cartItems.remove(item);
-      }
+      // Create a new list by mapping over the existing cart items.
+      // For the item being updated, use copyWith to create a new CartItem instance.
+      _cartItems =
+          _cartItems
+              .map((cartItem) {
+                if (cartItem.product.id == item.product.id) {
+                  return cartItem.copyWith(quantity: newQuantity);
+                }
+                return cartItem;
+              })
+              .where((cartItem) => cartItem.quantity > 0)
+              .toList(); // Filter out items with 0 or less quantity and convert to a new list
+      print(
+        'Cart after quantity update: ${_cartItems.map((e) => '${e.product.name}:${e.quantity}').join(', ')}',
+      ); // Debug print
     });
   }
 
+  /// Removes a specific item from the cart.
+  /// This method ensures immutability by creating a new list.
   void _removeFromCart(CartItem item) {
     setState(() {
-      _cartItems.remove(item);
+      // Create a new list by filtering out the item to be removed.
+      _cartItems =
+          _cartItems
+              .where((cartItem) => cartItem.product.id != item.product.id)
+              .toList();
+      print(
+        'Cart after remove: ${_cartItems.map((e) => '${e.product.name}:${e.quantity}').join(', ')}',
+      ); // Debug print
       _showMessageBox(
         context,
         'Removed',
@@ -1252,12 +1290,44 @@ class UserHomePage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Filter out some "top deals" for demonstration
+    final List<Product> topDeals =
+        products.where((p) => p.price < 5.0).take(4).toList();
+
     return SingleChildScrollView(
       child: Padding(
         padding: const EdgeInsets.all(16.0),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            // Search Bar
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 10.0),
+              child: TextField(
+                decoration: InputDecoration(
+                  hintText: 'Search for groceries...',
+                  prefixIcon: Icon(Icons.search, color: Colors.green),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: BorderSide.none,
+                  ),
+                  filled: true,
+                  fillColor: Colors.grey.shade100,
+                  contentPadding: EdgeInsets.symmetric(
+                    vertical: 0,
+                    horizontal: 15,
+                  ),
+                ),
+                onTap: () {
+                  _showMessageBox(
+                    context,
+                    'Search',
+                    'Search functionality is under development.',
+                  );
+                },
+              ),
+            ),
+            SizedBox(height: 10),
             Text(
               'All Categories',
               style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
@@ -1279,8 +1349,37 @@ class UserHomePage extends StatelessWidget {
               ),
             ),
             SizedBox(height: 20),
+            if (topDeals.isNotEmpty) ...[
+              Text(
+                'Top Deals',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+              ),
+              SizedBox(height: 10),
+              Container(
+                height: 250, // Adjust height as needed
+                child: ListView.builder(
+                  scrollDirection: Axis.horizontal,
+                  itemCount: topDeals.length,
+                  itemBuilder: (context, index) {
+                    final product = topDeals[index];
+                    final isFavorite = favoriteProducts.contains(product);
+                    return Padding(
+                      padding: const EdgeInsets.only(right: 16.0),
+                      child: _buildProductCard(
+                        product,
+                        onAddToCart,
+                        onToggleFavorite,
+                        isFavorite,
+                        isCompact: true,
+                      ),
+                    );
+                  },
+                ),
+              ),
+              SizedBox(height: 20),
+            ],
             Text(
-              'Grocery Deals',
+              'All Products',
               style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
             ),
             SizedBox(height: 10),
@@ -1294,7 +1393,8 @@ class UserHomePage extends StatelessWidget {
                     crossAxisCount: 2,
                     crossAxisSpacing: 16.0,
                     mainAxisSpacing: 16.0,
-                    childAspectRatio: 0.75, // Adjust as needed
+                    // MODIFICATION: Adjusted childAspectRatio to make cards narrower
+                    childAspectRatio: 0.44, // Changed from 0.46 to 0.44
                   ),
                   itemCount: products.length,
                   itemBuilder: (context, index) {
@@ -1335,90 +1435,109 @@ class UserHomePage extends StatelessWidget {
     Product product,
     Function(Product) onAddToCart,
     Function(Product) onToggleFavorite,
-    bool isFavorite,
-  ) {
+    bool isFavorite, {
+    bool isCompact = false,
+  }) {
     return Card(
       elevation: 4,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Expanded(
-            child: Center(
-              child: Image.network(
-                product.imageUrl,
-                fit: BoxFit.cover,
-                width: double.infinity,
-                errorBuilder:
-                    (context, error, stackTrace) =>
-                        Icon(Icons.image_not_supported, size: 50),
+      child: Container(
+        width: isCompact ? 160 : null, // Fixed width for compact cards
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(
+              child: Center(
+                child: Image.network(
+                  product.imageUrl,
+                  fit: BoxFit.cover,
+                  width: double.infinity,
+                  // MODIFICATION: Added a fixed height to the image to prevent overflow
+                  height: 120.0, // Explicitly set height
+                  errorBuilder:
+                      (context, error, stackTrace) =>
+                          Icon(Icons.image_not_supported, size: 50),
+                ),
               ),
             ),
-          ),
-          Padding(
-            padding: const EdgeInsets.all(8.0),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  product.name,
-                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
-                ),
-                SizedBox(height: 4),
-                Text('${product.unit}', style: TextStyle(color: Colors.grey)),
-                SizedBox(height: 4),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Text(
-                      '\$ ${product.price.toStringAsFixed(2)}',
-                      style: TextStyle(
-                        fontWeight: FontWeight.bold,
-                        fontSize: 16,
-                        color: Colors.green,
+            Padding(
+              padding: const EdgeInsets.all(8.0),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    product.name,
+                    style: TextStyle(
+                      fontWeight: FontWeight.bold,
+                      fontSize: isCompact ? 14 : 16,
+                    ),
+                  ),
+                  SizedBox(height: 4),
+                  Text(
+                    '${product.unit}',
+                    style: TextStyle(
+                      color: Colors.grey,
+                      fontSize: isCompact ? 10 : 12,
+                    ),
+                  ),
+                  SizedBox(height: 4),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        '\$ ${product.price.toStringAsFixed(2)}',
+                        style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: isCompact ? 14 : 16,
+                          color: Colors.green,
+                        ),
                       ),
-                    ),
-                    Row(
-                      children: [
-                        IconButton(
-                          icon: Icon(
-                            isFavorite ? Icons.favorite : Icons.favorite_border,
-                            color: isFavorite ? Colors.red : Colors.grey,
-                          ),
-                          onPressed: () => onToggleFavorite(product),
-                          visualDensity: VisualDensity.compact,
-                        ),
-                        InkWell(
-                          onTap: () => onAddToCart(product),
-                          child: Container(
-                            padding: EdgeInsets.all(6),
-                            decoration: BoxDecoration(
-                              color: Colors.green,
-                              borderRadius: BorderRadius.circular(5),
+                      Row(
+                        children: [
+                          IconButton(
+                            icon: Icon(
+                              isFavorite
+                                  ? Icons.favorite
+                                  : Icons.favorite_border,
+                              color: isFavorite ? Colors.red : Colors.grey,
+                              size: isCompact ? 20 : 24,
                             ),
-                            child: Icon(
-                              Icons.add,
-                              color: Colors.white,
-                              size: 20,
+                            onPressed: () => onToggleFavorite(product),
+                            visualDensity: VisualDensity.compact,
+                          ),
+                          InkWell(
+                            onTap: () => onAddToCart(product),
+                            child: Container(
+                              padding: EdgeInsets.all(isCompact ? 4 : 6),
+                              decoration: BoxDecoration(
+                                color: Colors.green,
+                                borderRadius: BorderRadius.circular(5),
+                              ),
+                              child: Icon(
+                                Icons.add,
+                                color: Colors.white,
+                                size: isCompact ? 16 : 20,
+                              ),
                             ),
                           ),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ],
+                        ],
+                      ),
+                    ],
+                  ),
+                ],
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
 }
 
-class CartPage extends StatelessWidget {
+// ---  Cart Page ---
+class CartPage extends StatefulWidget {
   final List<CartItem> cartItems;
-  final Function(CartItem, int) onQuantityChanged;
+  final Function(CartItem, double) onQuantityChanged;
   final Function(CartItem) onRemoveFromCart;
   final VoidCallback onCheckout;
 
@@ -1430,141 +1549,361 @@ class CartPage extends StatelessWidget {
   });
 
   @override
+  _CartPageState createState() => _CartPageState();
+}
+
+class _CartPageState extends State<CartPage> {
+  @override
   Widget build(BuildContext context) {
-    double subtotal = cartItems.fold(0.0, (sum, item) => sum + item.totalPrice);
+    double subtotal = widget.cartItems.fold(
+      0.0,
+      (sum, item) => sum + item.totalPrice,
+    );
 
     return Column(
       children: [
         Expanded(
           child:
-              cartItems.isEmpty
-                  ? Center(child: Text('Your cart is empty.'))
-                  : ListView.builder(
-                    itemCount: cartItems.length,
-                    itemBuilder: (context, index) {
-                      final item = cartItems[index];
-                      return Card(
-                        margin: EdgeInsets.symmetric(
-                          horizontal: 16,
-                          vertical: 8,
+              widget.cartItems.isEmpty
+                  ? Center(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(
+                          Icons.shopping_cart_outlined,
+                          size: 80,
+                          color: Colors.grey.shade400,
                         ),
-                        elevation: 2,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(10),
-                        ),
-                        child: Padding(
-                          padding: const EdgeInsets.all(8.0),
-                          child: Row(
-                            children: [
-                              Image.network(
-                                item.product.imageUrl,
-                                width: 60,
-                                height: 60,
-                                fit: BoxFit.cover,
-                                errorBuilder:
-                                    (context, error, stackTrace) => Icon(
-                                      Icons.image_not_supported,
-                                      size: 50,
-                                    ),
-                              ),
-                              SizedBox(width: 10),
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(
-                                      item.product.name,
-                                      style: TextStyle(
-                                        fontWeight: FontWeight.bold,
-                                        fontSize: 16,
-                                      ),
-                                    ),
-                                    Text(
-                                      '\$ ${item.product.price.toStringAsFixed(2)} / ${item.product.unit}',
-                                      style: TextStyle(color: Colors.grey),
-                                    ),
-                                    Text(
-                                      'Total: \$ ${item.totalPrice.toStringAsFixed(2)}',
-                                      style: TextStyle(
-                                        fontWeight: FontWeight.bold,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                              Row(
-                                children: [
-                                  IconButton(
-                                    icon: Icon(Icons.remove_circle_outline),
-                                    onPressed:
-                                        () => onQuantityChanged(
-                                          item,
-                                          item.quantity - 1,
-                                        ),
-                                  ),
-                                  Text('${item.quantity}'),
-                                  IconButton(
-                                    icon: Icon(Icons.add_circle_outline),
-                                    onPressed:
-                                        () => onQuantityChanged(
-                                          item,
-                                          item.quantity + 1,
-                                        ),
-                                  ),
-                                  IconButton(
-                                    icon: Icon(Icons.delete, color: Colors.red),
-                                    onPressed: () => onRemoveFromCart(item),
-                                  ),
-                                ],
-                              ),
-                            ],
+                        SizedBox(height: 20),
+                        Text(
+                          'Your cart is empty!',
+                          style: TextStyle(
+                            fontSize: 22,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.grey.shade600,
                           ),
                         ),
+                        SizedBox(height: 10),
+                        Text(
+                          'Add some delicious groceries to get started.',
+                          style: TextStyle(
+                            fontSize: 16,
+                            color: Colors.grey.shade500,
+                          ),
+                        ),
+                        SizedBox(height: 30),
+                        ElevatedButton.icon(
+                          onPressed: () {
+                            // Navigate back to the home page
+                            if (Navigator.canPop(context)) {
+                              Navigator.pop(context);
+                            } else {
+                              // If cart is the first page, navigate to home (index 0)
+                              // This assumes UserApp has a way to change selected index
+                              // For this example, we'll just pop if possible.
+                            }
+                          },
+                          icon: Icon(Icons.storefront),
+                          label: Text('Start Shopping'),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.green,
+                            foregroundColor: Colors.white,
+                            padding: EdgeInsets.symmetric(
+                              horizontal: 25,
+                              vertical: 12,
+                            ),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  )
+                  : ListView.builder(
+                    itemCount: widget.cartItems.length,
+                    itemBuilder: (context, index) {
+                      final item = widget.cartItems[index];
+                      return _buildCartItemCard(
+                        context,
+                        item,
+                        widget.onQuantityChanged,
+                        widget.onRemoveFromCart,
                       );
                     },
                   ),
         ),
-        Padding(
-          padding: const EdgeInsets.all(16.0),
-          child: Column(
-            children: [
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        if (widget.cartItems.isNotEmpty)
+          _buildCartSummary(context, subtotal, widget.onCheckout),
+      ],
+    );
+  }
+
+  Widget _buildCartItemCard(
+    BuildContext context,
+    CartItem item,
+    Function(CartItem, double) onQuantityChanged,
+    Function(CartItem) onRemoveFromCart,
+  ) {
+    return Card(
+      margin: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      elevation: 6, // Increased elevation for a more prominent look
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(15),
+      ), // More rounded corners
+      child: Padding(
+        padding: const EdgeInsets.all(12.0), // Reduced padding from 16 to 12
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            ClipRRect(
+              borderRadius: BorderRadius.circular(10), // Rounded image corners
+              child: Image.network(
+                item.product.imageUrl,
+                // MODIFICATION: Reduced image size in CartPage
+                width: 40, // Changed from 45 to 40
+                height: 40, // Changed from 45 to 40
+                fit: BoxFit.cover,
+                errorBuilder:
+                    (context, error, stackTrace) => Container(
+                      width: 40, // Changed from 45 to 40
+                      height: 40, // Changed from 45 to 40
+                      color: Colors.grey.shade200,
+                      child: Icon(
+                        Icons.image_not_supported,
+                        size: 30,
+                        color: Colors.grey.shade500,
+                      ), // Reduced icon size
+                    ),
+              ),
+            ),
+            SizedBox(width: 6), // Changed from 8 to 6
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    'Subtotal:',
-                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                  ),
-                  Text(
-                    '\$ ${subtotal.toStringAsFixed(2)}',
+                    item.product.name,
                     style: TextStyle(
-                      fontSize: 18,
                       fontWeight: FontWeight.bold,
-                      color: Colors.green,
-                    ),
+                      fontSize: 16,
+                      color: Colors.green.shade800,
+                    ), // Reduced font size from 18 to 16
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  SizedBox(height: 4),
+                  Text(
+                    '\$ ${item.product.price.toStringAsFixed(2)} / ${item.product.unit}',
+                    style: TextStyle(
+                      color: Colors.grey.shade600,
+                      fontSize: 13,
+                    ), // Reduced font size from 14 to 13
+                  ),
+                  SizedBox(height: 8),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Container(
+                        decoration: BoxDecoration(
+                          color: Colors.green.shade50,
+                          borderRadius: BorderRadius.circular(
+                            20,
+                          ), // Pill shape for quantity control
+                          border: Border.all(color: Colors.green.shade200),
+                        ),
+                        child: Row(
+                          children: [
+                            IconButton(
+                              icon: Icon(
+                                Icons.remove,
+                                color: Colors.green.shade700,
+                                size: 20,
+                              ), // Reduced icon size
+                              onPressed: () {
+                                double newQty = item.quantity - 0.5;
+                                // Round to one decimal place to prevent floating point inaccuracies
+                                newQty = double.parse(
+                                  newQty.toStringAsFixed(1),
+                                );
+                                if (newQty < 0.1) {
+                                  // Check against a small threshold for removal
+                                  _showConfirmationBox(
+                                    context,
+                                    'Remove Item',
+                                    'Are you sure you want to remove ${item.product.name} from your cart?',
+                                    () => onRemoveFromCart(item),
+                                  );
+                                } else {
+                                  onQuantityChanged(item, newQty);
+                                }
+                              },
+                              visualDensity: VisualDensity.compact,
+                            ),
+                            // Display quantity with its unit for clarity
+                            Text(
+                              '${item.quantity.toStringAsFixed(1)} ${item.product.unit}',
+                              style: TextStyle(
+                                fontSize: 14,
+                                fontWeight: FontWeight.bold,
+                                color: Colors.green.shade800,
+                              ), // Reduced font size from 16 to 14
+                            ),
+                            IconButton(
+                              icon: Icon(
+                                Icons.add,
+                                color: Colors.green.shade700,
+                                size: 20,
+                              ), // Reduced icon size
+                              onPressed: () {
+                                double newQty = item.quantity + 0.5;
+                                // Round to one decimal place
+                                newQty = double.parse(
+                                  newQty.toStringAsFixed(1),
+                                );
+                                onQuantityChanged(item, newQty);
+                              },
+                              visualDensity: VisualDensity.compact,
+                            ),
+                          ],
+                        ),
+                      ),
+                      Text(
+                        '\$ ${item.totalPrice.toStringAsFixed(2)}',
+                        style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 16,
+                          color: Colors.green.shade900,
+                        ), // Reduced font size from 18 to 16
+                      ),
+                    ],
                   ),
                 ],
               ),
-              SizedBox(height: 20),
-              ElevatedButton(
-                onPressed: onCheckout,
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.green,
-                  foregroundColor: Colors.white,
-                  minimumSize: Size(double.infinity, 50), // Full width button
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(10),
-                  ),
+            ),
+            SizedBox(width: 3),
+            IconButton(
+              icon: Icon(
+                Icons.delete_outline,
+                color: Colors.red.shade600,
+                size: 24,
+              ), // Reduced icon size from 28 to 24
+              onPressed: () {
+                _showConfirmationBox(
+                  context,
+                  'Remove Item',
+                  'Are you sure you want to remove ${item.product.name} from your cart?',
+                  () => onRemoveFromCart(item),
+                );
+              },
+              tooltip: 'Remove from Cart',
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildCartSummary(
+    BuildContext context,
+    double subtotal,
+    VoidCallback onCheckout,
+  ) {
+    return Container(
+      padding: const EdgeInsets.all(12.0), // Reduced padding from 16 to 12
+      decoration: BoxDecoration(
+        color: Colors.white,
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.1),
+            blurRadius: 10,
+            offset: Offset(0, -5),
+          ),
+        ],
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                'Subtotal:',
+                style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.grey.shade800,
                 ),
-                child: Text(
-                  'Proceed to Checkout',
-                  style: TextStyle(fontSize: 18),
+              ), // Reduced font size from 18 to 16
+              Text(
+                '\$ ${subtotal.toStringAsFixed(2)}',
+                style: TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.green.shade700,
                 ),
-              ),
+              ), // Reduced font size from 20 to 18
             ],
           ),
-        ),
-      ],
+          SizedBox(height: 8), // Reduced height from 10 to 8
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                'Delivery Fee:',
+                style: TextStyle(fontSize: 14, color: Colors.grey.shade700),
+              ), // Reduced font size from 16 to 14
+              Text(
+                '\$ 5.00',
+                style: TextStyle(fontSize: 14, color: Colors.grey.shade700),
+              ), // Reduced font size from 16 to 14
+            ],
+          ),
+          Divider(height: 16, thickness: 1), // Reduced height from 20 to 16
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                'Total:',
+                style: TextStyle(
+                  fontSize: 20,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.black,
+                ),
+              ), // Reduced font size from 22 to 20
+              Text(
+                '\$ ${(subtotal + 5.00).toStringAsFixed(2)}',
+                style: TextStyle(
+                  fontSize: 22,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.green.shade900,
+                ),
+              ), // Reduced font size from 24 to 22
+            ],
+          ),
+          SizedBox(height: 16), // Reduced height from 20 to 16
+          ElevatedButton(
+            onPressed: onCheckout,
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.green.shade700,
+              foregroundColor: Colors.white,
+              minimumSize: Size(
+                double.infinity,
+                50,
+              ), // Reduced height from 55 to 50
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+              elevation: 5,
+            ),
+            child: Text(
+              'Proceed to Checkout',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+            ), // Reduced font size from 20 to 18
+          ),
+        ],
+      ),
     );
   }
 }
@@ -1636,8 +1975,10 @@ class _OrderConfirmationPageState extends State<OrderConfirmationPage> {
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
                       Expanded(
-                        child: Text('${item.product.name} x ${item.quantity}'),
-                      ),
+                        child: Text(
+                          '${item.product.name} x ${item.quantity.toStringAsFixed(1)}',
+                        ),
+                      ), // Display quantity with one decimal
                       Text('\$ ${item.totalPrice.toStringAsFixed(2)}'),
                     ],
                   ),
@@ -1867,6 +2208,57 @@ class _OrderHistoryPageState extends State<OrderHistoryPage>
     return _userOrders.where((order) => order.status == status).toList();
   }
 
+  // --- ADDED _buildOrderList METHOD ---
+  Widget _buildOrderList(List<Order> orders) {
+    if (orders.isEmpty) {
+      return Center(child: Text('No orders in this category.'));
+    }
+    return ListView.builder(
+      padding: const EdgeInsets.all(16.0),
+      itemCount: orders.length,
+      itemBuilder: (context, index) {
+        final order = orders[index];
+        return Card(
+          margin: EdgeInsets.only(bottom: 16),
+          elevation: 4,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: InkWell(
+            onTap: () => _showOrderDetails(context, order),
+            child: Padding(
+              padding: const EdgeInsets.all(16.0),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Order Date: ${order.orderDate.day} ${getMonthName(order.orderDate.month)} ${order.orderDate.year}',
+                    style: TextStyle(fontSize: 14, color: Colors.grey),
+                  ),
+                  Text(
+                    'Total: \$ ${order.totalAmount.toStringAsFixed(2)}',
+                    style: TextStyle(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 18,
+                      color: Colors.green,
+                    ),
+                  ),
+                  Text(
+                    'Status: ${order.status.toString().split('.').last.toUpperCase()}',
+                  ),
+                  Text(
+                    'Items: ${order.items.map((e) => '${e.product.name} x ${e.quantity.toStringAsFixed(1)}').join(', ')}',
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+  // --- END _buildOrderList METHOD ---
+
   @override
   Widget build(BuildContext context) {
     return Column(
@@ -1893,101 +2285,6 @@ class _OrderHistoryPageState extends State<OrderHistoryPage>
           ),
         ),
       ],
-    );
-  }
-
-  // Helper method for building order list
-  Widget _buildOrderList(List<Order> orders) {
-    if (orders.isEmpty) {
-      return Center(child: Text('No orders in this category.'));
-    }
-    return ListView.builder(
-      padding: const EdgeInsets.all(16.0),
-      itemCount: orders.length,
-      itemBuilder: (context, index) {
-        final order = orders[index];
-        return Card(
-          margin: EdgeInsets.only(bottom: 16),
-          elevation: 4,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(10),
-          ),
-          child: Padding(
-            padding: const EdgeInsets.all(16.0),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Icon(Icons.shopping_cart, color: Colors.green),
-                    Text(
-                      '${order.orderDate.day} ${getMonthName(order.orderDate.month)} ${order.orderDate.year}',
-                      style: TextStyle(fontWeight: FontWeight.bold),
-                    ),
-                    IconButton(
-                      icon: Icon(Icons.delete, color: Colors.grey),
-                      onPressed: () {
-                        _showConfirmationBox(
-                          context,
-                          'Cancel Order',
-                          'Are you sure you want to cancel this order?',
-                          () {
-                            // Allow user to cancel pending orders
-                            if (order.status == OrderStatus.pending) {
-                              _orderService.updateOrderStatus(
-                                order.userId,
-                                order.id,
-                                OrderStatus.cancelled,
-                              );
-                              _showMessageBox(
-                                context,
-                                'Order Cancelled',
-                                'Order ID: ${order.id} has been cancelled.',
-                              );
-                            } else {
-                              _showMessageBox(
-                                context,
-                                'Cannot Cancel',
-                                'Only pending orders can be cancelled.',
-                              );
-                            }
-                          },
-                        );
-                      },
-                    ),
-                  ],
-                ),
-                SizedBox(height: 10),
-                Text(
-                  'Subtotal: \$ ${order.totalAmount.toStringAsFixed(2)}',
-                  style: TextStyle(fontSize: 16),
-                ),
-                Text(
-                  'Total items: ${order.items.length}',
-                  style: TextStyle(fontSize: 16),
-                ),
-                SizedBox(height: 10),
-                Align(
-                  alignment: Alignment.bottomRight,
-                  child: TextButton(
-                    onPressed: () {
-                      _showOrderDetails(context, order);
-                    },
-                    child: Text(
-                      'VIEW CART',
-                      style: TextStyle(
-                        color: Colors.green,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        );
-      },
     );
   }
 
@@ -2032,7 +2329,7 @@ class _OrderHistoryPageState extends State<OrderHistoryPage>
                 ...order.items
                     .map(
                       (item) => Text(
-                        '${item.product.name} x ${item.quantity} (\$${item.totalPrice.toStringAsFixed(2)})',
+                        '${item.product.name} x ${item.quantity.toStringAsFixed(1)} (\$${item.totalPrice.toStringAsFixed(2)})',
                       ),
                     )
                     .toList(),
@@ -3038,8 +3335,8 @@ class _OrderManagementPageState extends State<OrderManagementPage> {
                           'Total Amount: \$ ${order.totalAmount.toStringAsFixed(2)}',
                         ),
                         Text(
-                          'Items: ${order.items.map((e) => e.product.name).join(', ')}',
-                        ),
+                          'Items: ${order.items.map((e) => '${e.product.name} x ${e.quantity.toStringAsFixed(1)}').join(', ')}',
+                        ), // Display quantity with one decimal
                         Text(
                           'Status: ${order.status.toString().split('.').last.toUpperCase()}',
                           style: TextStyle(
